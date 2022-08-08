@@ -8,131 +8,114 @@
 # 
 #######################################################
 import time
-from xml.dom.minidom import parseString
-import threading
-from queue import Queue
-from logging.handlers import RotatingFileHandler
-import logging
-import sys
-from CreateLoggerController import CreateLoggerController
-logger = CreateLoggerController("ClientReceptionHandler").getLogger()
-from configuration.ClientReceptionLoggingConstants import ClientReceptionLoggingConstants
+import socket
+import errno
+import copy
+import re
+
+from FreeTAKServer.controllers.configuration.MainConfig import MainConfig
+from FreeTAKServer.controllers.CreateLoggerController import CreateLoggerController
+from FreeTAKServer.controllers.configuration.LoggingConstants import LoggingConstants
+from defusedxml import ElementTree as etree
+
+loggingConstants = LoggingConstants(log_name="FTS_ClientReceptionHandler")
+logger = CreateLoggerController("FTS_ClientReceptionHandler", logging_constants=loggingConstants).getLogger()
+from FreeTAKServer.controllers.configuration.ClientReceptionLoggingConstants import ClientReceptionLoggingConstants
+
 loggingConstants = ClientReceptionLoggingConstants()
-#TODO: add more rigid exception management
+BUFF_SIZE = MainConfig.DataReceptionBuffer
 
 class ClientReceptionHandler:
     def __init__(self):
-        self.dataPipe = ''
-        self.eventPipe = ''
-        self.threadDict = {}
-        self.dataArray = []
+        self.dataPipe = []
+        self.socketCount = 0
 
-    def startup(self, dataPipe, eventPipe):
+    def startup(self, clientInformationArray):
         try:
-            self.dataPipe = dataPipe
-            self.eventPipe = eventPipe
-            threading.Thread(target=self.monitorEventPipe, args=(), daemon=True).start()
-            threading.Thread(target=self.returnDataToOrchestrator, args=(), daemon=True).start()
-            logger.propagate = False
+            self.clientInformationArray = clientInformationArray  # create copy of client information array so it cant be changed during iteration
+            '''logger.propagate = False
             logger.info(loggingConstants.CLIENTRECEPTIONHANDLERSTART)
-            logger.propagate = True
-            while True:
-                time.sleep(120)
-                logger.info('the number of threads is ' + str(threading.active_count()) +' and the following are the clients ' + str(self.threadDict))
+            logger.propagate = True'''
+            output = self.monitorForData(self.dataPipe)
+            if output == 1:
+                return self.dataPipe
+            else:
+                return -1
+            '''
+            time.sleep(600)
+            # temporarily remove due to being unnecessary and excessively flooding logs
+            logger.info('the number of threads is ' + str(threading.active_count()) + ' monitor event process alive is ' + str(monitorEventProcess.is_alive()) +
+                        ' return data to Orchestrator process alive is ' + str(monitorForData.is_alive()))
+            '''
         except Exception as e:
-            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERSTARTUPERROR+str(e))
+            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERSTARTUPERROR + str(e))
 
-    def monitorEventPipe(self):
-        while True:
-            try:
-                while self.eventPipe.poll():
-                    command = self.eventPipe.recv()
-                    if command[0] == loggingConstants.CREATE:
-                        self.createClientMonitor(command[1])
-                    elif command[0] == loggingConstants.DESTROY:
-                        self.destroyClientMonitor(command[1])
-            except Exception as e:
-                logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITOREVENTPIPEERROR+str(e))
-
-    def returnDataToOrchestrator(self):
-        while True:
-            try:
-                while len(self.dataArray)>0:
-                    value = self.dataArray.pop(0)
-                    self.dataPipe.send(value)
-            except Exception as e:
-                logger.error(loggingConstants.CLIENTRECEPTIONHANDLERRETURNDATATOORCHESTRATORERROR+str(e))
-
-    def createClientMonitor(self, clientInformation):
-        try:
-            alive = threading.Event()
-            alive.set()
-            clientMonitorThread = threading.Thread(target=self.monitorForData, args = (clientInformation, alive), daemon=True)
-            clientMonitorThread.start()
-            self.threadDict[clientInformation.ID] = [clientMonitorThread, alive]
-            logger.info(loggingConstants.CLIENTRECEPTIONHANDLERCREATECLIENTMONITORINFO)
-        except Exception as e:
-            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERCREATECLIENTMONITORERROR+str(e))
-
-    def destroyClientMonitor(self, clientInformation):
-        try:
-
-            thread = self.threadDict.pop(clientInformation.clientInformation.ID)
-            logger.info(thread)
-            thread[1].clear()
-            thread[0].join()
-            logger.info(loggingConstants.CLIENTRECEPTIONHANDLERDESTROYCLIENTMONITORINFO)
-        except Exception as e:
-            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERDESTROYCLIENTMONITORERROR+str(e))
-
-    def monitorForData(self, clientInformation, alive):
+    def monitorForData(self, queue):
         '''
-        updated receive all 
+        updated receive all
         '''
         try:
-            try:                
-                BUFF_SIZE = 8087
-                client = clientInformation.socket
-                data = b''
-            except Exception as e:
-                logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITORFORDATAERRORA+str(e))
-                self.returnReceivedData(clientInformation, b'')
-            while alive.isSet():
+            keys = copy.deepcopy(list(self.clientInformationArray.keys()))  # this prevents changes to the clientInformationArray from having any severe effects on this method
+            for user_id in keys:
+                sock = self.clientInformationArray[user_id][0]
+                client = user_id
+                #client = self.clientInformationArray[user_id][1]
                 try:
-                    part = client.recv(BUFF_SIZE)
-                except OSError as e:
-                    logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITORFORDATAERRORB+str(e))
-                    self.returnReceivedData(clientInformation, b'')
-                    break
-                try:
-                    if part == b'' or part == None:
-                        self.returnReceivedData(clientInformation, b'')
-                        break
-                    elif len(part) < BUFF_SIZE:
-                        # either 0 or end of data
-                        data += part 
-                        self.returnReceivedData(clientInformation, data)
-                        data = b''
-                    else:
-                        data += part
+                    sock.settimeout(0.001)
+                    try:
+                        xmlstring = self.recv_until(sock).decode()
+                        if xmlstring == b'' or xmlstring is None: 
+                            self.returnReceivedData(client, b'', queue)
+                            logger.debug("empty string sent, standard disconnect")
+                            continue
+                        xmlstring = "<multiEvent>" + xmlstring + "</multiEvent>"  # convert to xmlstring wrapped by multiEvent tags
+                        xmlstring = re.sub(r'\<\?xml(?s)(.*)\?\>', '', xmlstring)  # replace xml definition tag with empty string as it breaks serilization
+                        events = etree.fromstring(xmlstring)  # serialize to object
+                        for event in events.findall('event'):
+                            self.returnReceivedData(client, etree.tostring(event), queue)  # send each instance of event to the core
+                    except socket.timeout as e:
+                        continue
+                    except BrokenPipeError as e:
+                        self.returnReceivedData(client, b'', queue)
+                        continue
+                    except Exception as e:
+                        import traceback
+                        if hasattr(e, "errno") and e.errno == errno.EWOULDBLOCK:  # this prevents errno 11 from spontanieously disconnecting clients due to the socket blocking set to 0
+                            logger.debug("EWOULDBLOCK error passed " + str(e))
+                            continue
+                        logger.error(
+                            "Exception other than broken pipe in monitor for data function " + str(e) + ''.join(traceback.format_exception(None, e, e.__traceback__)))
+                        self.returnReceivedData(client, b'', queue)
+                        continue
+
                 except Exception as e:
-                    logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITORFORDATAERRORC+str(e))
-                    self.returnReceivedData(clientInformation, b'')
-                    break
-            
+                    logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITORFORDATAERRORD + str(e))
+                    self.returnReceivedData(client, b'', queue)
+                    # return -1 commented out so entire run isn't stopped because of one disconnect
             return 1
         except Exception as e:
-            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERMONITORFORDATAERRORD+str(e))
-            self.returnReceivedData(clientInformation, b'')
+            logger.error('exception in monitor for data ' + str(e))
+            return -1
 
-    def returnReceivedData(self, clientInformation, data):
+    def returnReceivedData(self, clientInformation, data, queue):
         try:
-            from model.RawCoT import RawCoT
+            from FreeTAKServer.model.RawCoT import RawCoT
             RawCoT = RawCoT()
-            #print(data)
             RawCoT.clientInformation = clientInformation
-            RawCoT.xmlString = data
-            self.dataArray.append(RawCoT)
-
+            RawCoT.xmlString = data.replace(b'\n', b'')  # replace all newlines with empty
+            self.dataPipe.append(RawCoT)
+            logger.debug("data received "+ str(data))
+            return 1
         except Exception as e:
-            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERRETURNRECEIVEDDATAERROR+str(e))
+            logger.error(loggingConstants.CLIENTRECEPTIONHANDLERRETURNRECEIVEDDATAERROR + str(e))
+            return -1
+
+    def recv_until(self, client):
+        start_receive_time = time.time()
+        message = client.recv(BUFF_SIZE)
+        while time.time() - start_receive_time <= MainConfig.MaxReceptionTime:
+            try:
+                message = message + client.recv(BUFF_SIZE)
+            except Exception as e:
+                break
+        return message

@@ -1,20 +1,28 @@
 import os
 from pathlib import PurePath
 class LoggingConstants:
-    def __init__(self):
+    def __init__(self, log_name = "FTS"):
         #main logging config
-        self.CURRENTPATH = os.path.dirname(os.path.realpath(__file__))
-        self.CURRENTPATH = PurePath(self.CURRENTPATH)
-        self.PARENTPATH = self.CURRENTPATH.parents[0]
+        # if on a unix type system with /var/log put the logs there
+        if os.path.isdir('/var/log'):
+            self.PARENTPATH = '/var'
+            self.LOGDIRECTORY = 'log'
+        else:
+            # determine the log path the old way under the execution path
+            self.CURRENTPATH = os.path.dirname(os.path.realpath(__file__))
+            self.CURRENTPATH = PurePath(self.CURRENTPATH)
+            self.PARENTPATH = str(self.CURRENTPATH.parents[0])
+            self.LOGDIRECTORY = 'logs'
+
         self.LOGFORMAT = '%(levelname)s : %(asctime)s : %(filename)s:%(lineno)d : %(message)s'
-        self.LOGNAME = 'FTS'
-        self.LOGDIRECTORY = 'logs'
-        self.WARNINGLOG = PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_warning.log")
-        self.DEBUGLOG = PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_debug.log")
-        self.INFOLOG = PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_info.log")
-        self.HTTPLOG = PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_http.log")
+        self.LOGNAME = log_name
+
+        self.ERRORLOG = str(PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_error.log"))
+        self.DEBUGLOG = str(PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_debug.log"))
+        self.INFOLOG = str(PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_info.log"))
+        self.HTTPLOG = str(PurePath(self.PARENTPATH, f"{self.LOGDIRECTORY}/{self.LOGNAME}_http.log"))
         self.DELIMITER = ' ? '
-        self.MAXFILESIZE = 100000
+        self.MAXFILESIZE = 100000000
         self.BACKUPCOUNT = 5
         #orchestrator logs
         
@@ -40,10 +48,10 @@ class LoggingConstants:
         self.CLIENTDISCONNECTSTART = 'initiating client disconnection'
         self.REMOVE = "remove"
         self.DESTROY = 'destroy'
-        self.CLIENTDISCONNECTEND = 'there has been an error in the reception of generic data'
+        self.CLIENTDISCONNECTEND = 'client disconnection has concluded '
         self.CLIENTDISCONNECTERROR = 'there has been an error in the reception of generic data'
 
-        #monitorRawCoT
+        #monitor_raw_cot
         self.MONITORRAWCOTERRORA = 'there has been an error in the reception of data in the monitoring of pipes A'
         self.MONITORRAWCOTERRORB = 'there has been an error in the reception of data in the monitoring of pipes B'
         self.MONITORRAWCOTERRORC = 'there has been an error in the reception of data in the monitoring of pipes C'
